@@ -1,0 +1,273 @@
+---
+title: "Predicting quantity of sales given a price"
+author: "Floriano Peixoto"
+output:
+  pdf_document: default
+  html_notebook: default
+  html_document: default
+---
+
+The main objective of our model will be predict the quantity that will be sold, given a determined price to a product.
+
+```{r, include=F}
+library(lubridate)
+library(dplyr)
+library(psych)
+library(h2o)
+library(ggplot2)
+
+h2o.OBJ <- h2o.init()
+
+set.seed(1234)
+```
+
+Frist of all let´s load the data we have.
+
+```{r}
+sales <- read.csv2("sales.csv", sep=",", stringsAsFactors = T)
+prices <- read.csv2("comp_prices.csv", sep=",", stringsAsFactors = F)
+```
+
+As we can see the data we want is divided between the both sets, the quantity is in sales and the prices is in comp_prices, so we need to find a way to merge the two sets.
+
+```{r}
+names(sales)
+names(prices)
+```
+
+Between the two sets we can find PROD_ID and a date field, we can use them to merge it to a unique set, but the problem is that we have a lot of prices listed to the same date, two for each competitor. So we can transform this field into derivated fields, let´s try to use min, max, mean, median and standard deviation. The data field could be transformed as well, so let´s create a field for each attribute.
+
+```{r}
+prices_processed <- filter(prices, complete.cases(prices)) %>%
+                    mutate(YEAR = lubridate::year(as_datetime(DATE_EXTRACTION)),
+                           MONTH = lubridate::month(as_datetime(DATE_EXTRACTION)),
+                           DAY = lubridate::day(as_datetime(DATE_EXTRACTION)),
+                           COMPETITOR_PRICE = as.numeric(COMPETITOR_PRICE),
+                           PROD_ID = as.factor(PROD_ID)) %>%
+                    group_by(PROD_ID, YEAR, MONTH, DAY) %>%
+                    summarise(MIN_PRICE = min(COMPETITOR_PRICE),
+                              MAX_PRICE = max(COMPETITOR_PRICE),
+                              MEAN_PRICE = mean(COMPETITOR_PRICE),
+                              SD_PRICE = sd(COMPETITOR_PRICE),
+                              MEDIAN_PRICE = median(COMPETITOR_PRICE))
+
+
+prices_processed
+```
+
+Now let´s process the sales data too.
+
+```{r}
+sales_processed <- filter(sales, complete.cases(sales)) %>%
+                    mutate(YEAR = lubridate::year(as_datetime(DATE_ORDER)),
+                           MONTH = lubridate::month(as_datetime(DATE_ORDER)),
+                           DAY = lubridate::day(as_datetime(DATE_ORDER)),
+                           QTY_ORDER = as.numeric(QTY_ORDER),
+                           PROD_ID = as.factor(PROD_ID)) %>%
+                    group_by(PROD_ID, YEAR, MONTH, DAY) %>%
+                    summarise(QTY_ORDER = sum(QTY_ORDER))
+
+sales_processed
+```
+
+Now we can merge the two data sets.
+
+```{r}
+merged_data <- merge(sales_processed, prices_processed)
+
+tail(merged_data)
+```
+
+
+Now we´ll divide the data into two sets, the training set and the test set, we use this to ensure a trusty model validated by results we previously know. We´ll use 80% of the data to the training set and the rest to the test set. 
+
+```{r}
+
+merged_data.hex <- as.h2o(merged_data,destination_frame = "merged_data.hex")
+
+data_to_model <- h2o.splitFrame(data = merged_data.hex , 
+                               ratios = 0.80, 
+                               seed=1234)
+
+train <- data_to_model[[1]]
+test <- data_to_model[[2]]
+
+```
+
+Now we´ll try to find a good linear regression model that can predicts our price. As our target, we´ll use the MEDIAN_PRICE as it´s a real value of price present in our data. 
+
+For this work we´ll use (definitions from: https://github.com/h2oai/h2o-training-book/blob/master/hands-on_training/regression.md):
+
+- Generalized Linear Models (GLM): Average an ensemble of weakly predicting (small) trees where each tree "adjusts" to the "mistakes" of the preceding trees.
+- Gradient (Tree) Boosting Machines (GBM): Average an ensemble of weakly predicting (small) trees where each tree "adjusts" to the "mistakes" of the preceding trees.
+- Random Forests: Average an ensemble of weakly predicting (larger) trees where each tree is de-correlated from all other trees.
+
+```{r, warning=F}
+result <- c()
+
+model <- c("GBM", "GLM" , "RF")
+
+fields <- setdiff(setdiff(names(train), "QTY_ORDER"), "MEDIAN_PRICE")
+
+
+GBM <- h2o.gbm(x = fields, build_tree_one_node = T,
+            y = "QTY_ORDER",
+            training_frame = train,
+            validation_frame = test,
+            seed=1234)
+
+result[[1]] <-  h2o.r2(GBM, valid = TRUE)
+
+
+GLM <- h2o.glm(x = fields, 
+              y = "QTY_ORDER",
+              training_frame = train,
+              validation_frame = test,
+              family = "poisson",
+              seed=1234)
+
+result[[2]] <-  h2o.r2(GLM, valid = TRUE)
+
+RF <- h2o.randomForest(x = fields, 
+                       y = "QTY_ORDER",
+                       training_frame = train,
+                       validation_frame = test,
+                       seed=1234)
+
+result[[3]] <-  h2o.r2(RF, valid = T)
+
+
+results <- data.frame(model,result)
+
+
+names(results) <- c("model", "squared_ratios")
+
+results
+
+```
+
+```{r}
+ggplot(data=results, aes(x = model, y = squared_ratios, fill = model)) +
+ geom_bar(stat="identity", position = "dodge")
+```
+
+As we can see the random forest had the best score above all others, although the rate was not too impressive, so let´s use it and see what more this model has to tell us.
+
+```{r}
+RF_summary <- summary(RF)
+
+g <- ggplot(data = RF_summary, aes(x = variable, y = scaled_importance, fill = variable)) +
+geom_bar(stat = "identity", position = "dodge")
+g
+```
+
+
+We found out that the field YEAR was irrelavant for the set, so we can remove it, but for meanings of futher inspection we´ll let it be. We could detect the principals fields within the summary of the model:
+
+- PROD_ID
+
+- DAY
+
+- MEAN_PRICE
+
+- MIN_PRICE
+
+It appears that some produtcs sell more than others and some days are more important as well, problably it has something to do with the day of week. The mean and min could work together as lower prices would decrease the mean and make the product more affordable.
+
+Let´s see if we can make it even more precise.
+
+```{r}
+
+RF2 <- h2o.randomForest(
+    x = fields,
+    y = "QTY_ORDER",
+    training_frame = train,
+    validation_frame = test,
+    ntrees = 75,
+    max_depth = 35,
+    seed = 1234
+  )
+  h2o.r2(RF2, valid = T)
+
+```
+
+It represents a small increase in precision but it´s not a good one, let´s try to create a more accurate model. We could use the DAY variable, let´s find the median prices for each day and what day of week it is. The week must have something to do with the sales as well, so we´ll calculate the median
+
+```{r}
+
+merged_data <-
+  mutate(merged_data,
+  WD = wday(ymd(paste(
+    YEAR, sprintf("%02d", MONTH), sprintf("%02d", DAY), sep = ""))),
+    WEEK = lubridate::week(ymd(paste(
+    YEAR, sprintf("%02d", MONTH), sprintf("%02d", DAY), sep = ""))))
+  
+  mean_prices_wd <- group_by(merged_data, WD) %>%
+  summarise(MEAN_WD = median(MIN_PRICE))
+  
+  
+  mean_prices_week <- group_by(merged_data, WEEK) %>%
+  summarise(MEAN_WEEK = median(MIN_PRICE))
+  
+  
+  merged_data <- merge(merged_data, mean_prices_wd)
+  
+  merged_data <- mutate(merged_data,
+                DIF_WD = MEDIAN_PRICE / MEAN_WD,
+                DIF_WEEK = MEDIAN_PRICE / WEEK)
+  
+  tail(merged_data)
+
+```
+
+Let´s see how our model goes now.
+
+```{r}
+
+fields <- setdiff(setdiff(names(train), "QTY_ORDER"), "MEDIAN_PRICE")
+
+merged_data.hex <-
+  as.h2o(merged_data, destination_frame = "merged_data2.hex")
+
+data_to_model <-
+  h2o.splitFrame(data = merged_data.hex ,
+                 ratios = 0.80,
+                 seed = 1234)
+
+train <- data_to_model[[1]]
+test <- data_to_model[[2]]
+
+
+RF3 <- h2o.randomForest(
+  x = fields,
+  y = "QTY_ORDER",
+  training_frame = train,
+  validation_frame = test,
+  ntrees = 150,
+  max_depth = 45,
+  seed = 1234
+)
+h2o.r2(RF3, valid = T)
+
+
+```
+
+We could get a precision of 47% this time. Let´s see how this new tunning changed the model.
+
+```{r, echo=F}
+F3_summary <- summary(RF3)
+```
+
+
+```{r}
+
+
+ggplot(data=F3_summary, aes(x = variable, y = scaled_importance, fill = variable)) +
+ geom_bar(stat="identity", position = "dodge")
+```
+
+There were some increasing in importance for the fields, specially the MIN_PRICE. Now our model had a good precison gain.
+
+##Conclusions
+
+Our model could predict the prices with a 47% score. To futher improvments we could extract more relationships with the time period and price practiced, as it appears to have significent relationship

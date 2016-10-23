@@ -1,0 +1,153 @@
+---
+title: "Analysis of Prices"
+author: "Floriano Peixoto"
+output:
+  pdf_document: default
+  html_notebook: default
+  html_document: default
+---
+
+Here we are going to analyse the prices each competitor gives over time in a data set and discover what it has give us.
+
+The data is described as bellow:
+
+- PROD_ID: Product ID. the values varies between P1 to P9;
+
+- DATE_EXTRACTION: Date and Time of the extraction of the competitors’ price, under YYYY-MM-DD HH:MM:SS format;
+
+- COMPETITOR: Competitors’ ID (C1 to C6);
+
+- COMPETITOR_PRICE: Competitors’ price per product, which can depend on the payment method;
+
+- PAY_TYPE: Payment Method (1=deferred payment, 2=immediate payment)
+
+```{r, include=FALSE}
+library(lubridate)
+library(dplyr)
+library(psych)
+library(ggplot2)
+library(scales)
+source("http://peterhaschke.com/Code/multiplot.R")
+
+```
+
+```{r}
+prices <-  read.csv("comp_prices.csv", sep=",", stringsAsFactors = T)
+
+tail(prices)
+```
+
+As the data documentation tells us the competitor is monitored twice a day.
+
+```{r}
+prices <- arrange(prices, COMPETITOR, PROD_ID, DATE_EXTRACTION)
+
+tail(prices)
+```
+
+Ordering the set by COMPETITOR, PROD_ID and DATE_EXTRACTION we can see that it´s true, we can turn that into a single line displaying it as min and max price.
+
+```{r}
+prices_min_max <- mutate(prices, YEAR = lubridate::year(DATE_EXTRACTION), 
+                            MONTH = lubridate::month(DATE_EXTRACTION),
+                            DAY = lubridate::day(DATE_EXTRACTION),
+                            PROD_ID = as.factor(PROD_ID)) %>%
+                  group_by(COMPETITOR, PROD_ID, YEAR, MONTH, DAY) %>%
+                  summarise(MIN_PRICE = min(COMPETITOR_PRICE),
+                            MAX_PRICE = max(COMPETITOR_PRICE)) %>%
+                  arrange(COMPETITOR, PROD_ID, YEAR, MONTH, DAY)
+
+tail(prices_min_max)
+```
+
+##Distribuition of products by competitor
+
+With the data in our hands we can try to discrinate the presence of competitors in the market showing the products it sells.
+
+```{r}
+presence_market <- group_by(prices_min_max, COMPETITOR, PROD_ID) %>%
+                   summarise(M = n())
+
+tail(presence_market)
+```
+
+```{r}
+g <- ggplot(presence_market, aes(y = M, x = COMPETITOR))
+
+g +  geom_bar(stat = "identity", aes(fill = PROD_ID)) 
+```
+
+The plot show us the there are 4 majors competitors C1, C2, C3 and C6, the minor one is C5. It does not seems to have one great competitor, but we have a weaker one in the set. It seems that every major compoetitor sells every product, but the other two has some missing products.
+
+
+##The competitor with lowest price by product
+
+With our data we can see now what are the competitors with the best price by product.
+
+```{r}
+competitor_best_price <- group_by(prices_min_max, PROD_ID, COMPETITOR) %>%
+                         summarise(PRICE = min(MIN_PRICE)) %>%
+                         slice(which.min(PRICE))
+
+competitor_best_price
+```
+
+```{r}
+g <- ggplot(competitor_best_price, aes(y = PROD_ID, x = COMPETITOR))
+
+g +  geom_bar(stat = "identity", aes(fill = PROD_ID), position = "dodge") 
+```
+
+
+The competitor C1 has the best prices for almost all products, loosing to C4 in just two products P2 and P4.
+
+##The competitor with the highest prices
+
+Now let´s see the competitor with the highest prices.
+
+```{r}
+competitor_worst_price <- group_by(prices_min_max, PROD_ID, COMPETITOR) %>%
+                         summarise(PRICE = max(MAX_PRICE)) %>%
+                         slice(which.max(PRICE))
+
+competitor_worst_price
+```
+
+```{r}
+g <- ggplot(competitor_worst_price, aes(y = PROD_ID, x = COMPETITOR))
+
+g +  geom_bar(stat = "identity", aes(fill = PROD_ID), position = "dodge")
+```
+
+Diferently from the lowest prices, we can see a better distribuition over the competitors. 
+
+##The lowest and higher prices per competitor by product
+
+It´s intereting to compare the prices each competitor has, historically, for each product in terms to understand more about their behaviors during the year.
+
+```{r}
+comp_best_worst_pric_prod <- group_by(prices_min_max, COMPETITOR, PROD_ID) %>%
+                             summarise(MIN_PRICE = min(MIN_PRICE),
+                                       MAX_PRICE = max(MAX_PRICE)) %>%
+                             arrange(COMPETITOR, PROD_ID)
+
+comp_best_worst_pric_prod
+```
+
+```{r}
+
+for(product in levels(comp_best_worst_pric_prod$PROD_ID)){
+  
+  g <- ggplot(filter(comp_best_worst_pric_prod, PROD_ID == product), aes(y = MAX_PRICE, x = COMPETITOR, ymin = MIN_PRICE, ymax = MAX_PRICE, fill = COMPETITOR))
+  
+  g <- g +  geom_bar(stat = "identity") + 
+  geom_errorbar()   + 
+  ggtitle(product)
+
+  
+  print(g)
+}
+
+```
+
+As we can see some competitors have similar prices for some products, but others have a really lower costs. And as we could see before not all of them sell all products, so some of them has higher presence in the market.

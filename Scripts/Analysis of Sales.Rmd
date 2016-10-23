@@ -1,0 +1,140 @@
+---
+title: "Analysis of Sales"
+author: "Floriano Peixoto"
+output:
+  pdf_document: default
+  html_notebook: default
+  html_document: default
+---
+
+Here we are going to treat the analysis of the sales data set and discover what it has to give us.
+
+The data is described as bellow:
+
+- PROD_ID: Product ID. the values varies between P1 to P9;
+
+- DATE_ORDER: Sales Date, under YYYY-MM-DD format;
+
+- QTY_ORDER: Quantity Sold;
+
+- REVENUE: Sale revenue. There can be variations of the price for the same product, depending on the sales channel or discounts, which are applied to the base price
+
+
+```{r, include=FALSE}
+library(lubridate)
+library(dplyr)
+library(psych)
+library(ggplot2)
+library(scales)
+```
+
+```{r}
+sales <-  read.csv("sales.csv", sep=",", stringsAsFactors = T)
+
+tail(sales)
+```
+
+Now let´s prepare the date to make it easy to explore its features. The first thing we could do is sum the QTY_ORDER and the REVENUE by PROD_ID and DATE_ORDER to understand how much was sold in a date per product, than the DATE_ORDER field could be extracted into three: YEAR, MONTH and DAY, so we could use it later to understand more features of the data set. The product will be turned into a numeric representation as well.
+
+```{r}
+
+sales_data_split <- mutate( sales, YEAR = lubridate::year(DATE_ORDER), 
+                            MONTH = lubridate::month(DATE_ORDER),
+                            DAY = lubridate::day(DATE_ORDER),
+                            PROD_ID = as.factor(PROD_ID)) %>%
+                    group_by(PROD_ID, YEAR, MONTH, DAY) %>%                  
+                    summarise(QTY_ORDER = sum(QTY_ORDER),
+                           REVENUE = sum(REVENUE)) %>%
+                    arrange(PROD_ID, YEAR, MONTH, DAY) 
+sales_data_split
+```
+
+Now we can see if the data has any correlation.
+
+```{r}
+sales_data_corr <- mutate(sales_data_split, ID = as.numeric(PROD_ID)) %>%
+                   group_by(ID, YEAR, MONTH, DAY) %>% 
+                   select(-PROD_ID)
+
+cor.wt(sales_data_corr)
+```
+
+The most relevant correlation between the fields is the QTY_ORDER and REVENUE, it is almost a direct relationship, we can think that happens because the REVENUE field indicates that total REVENUA not per item, so we could use another field that shows a ratio of REVENUE by WTY_ORDER.
+
+```{r}
+sales_processed <- mutate(sales_data_split, REV_PER_ITEM = REVENUE / QTY_ORDER)
+
+sales_processed
+```
+
+##The most lucrative product
+
+Now we´re ready to study the lucrative factor of the products.
+
+###The most lucrative of all times
+
+We could find out the most lucrative product by the total REVENUE
+
+```{r}
+sales_most_lucrative <- group_by(sales_processed, PROD_ID) %>%
+                        summarise(REVENUE = sum(REVENUE)) %>%
+                        arrange(desc(REVENUE))
+
+sales_most_lucrative
+```
+
+```{r}
+
+g <- ggplot(sales_most_lucrative, aes(y = REVENUE, x = PROD_ID))
+
+g +  geom_bar(stat = "identity", aes(fill = PROD_ID, PROD_ID), position = "dodge") +
+   scale_y_continuous(breaks = c(0,7978902,46017485,161242142))
+```
+
+As we can see the P7 is the most lucrative product of all time by far, follwed by P2. The others products seem to be very close to each other in perspective.
+
+##The most lucrative month
+
+Let´s discover what is the most lucrative month of the year in the data set history, for that we´ll calculate the median of the REVENUE by month.
+
+```{r}
+sales_month <- group_by(sales_processed, MONTH) %>%
+               summarise(REVENUE = median(REVENUE)) %>%
+               mutate(MONTH = month.abb[MONTH]) %>%
+               arrange(desc(REVENUE))
+
+sales_month
+```
+
+```{r}
+
+
+g <- ggplot(sales_month, aes(y = REVENUE, x = MONTH))
+
+g +  geom_bar(stat = "identity", aes(fill = MONTH), position = "dodge") 
+```
+
+The first thing we notice is that the data does not register sales for november and december. But January is the month with more sales by far, followed by September and October.
+
+##The distribuition of product sale per month
+
+Let´s try to discover how the sales by product are distribuited over the months.
+
+```{r}
+sales_product_month <- group_by(sales_processed,PROD_ID, MONTH) %>%
+                       summarise(QTY_ORDER = sum(QTY_ORDER)) %>%
+                       mutate( MONTH = month.abb[MONTH]) %>%
+                       arrange(PROD_ID, MONTH, QTY_ORDER) 
+
+sales_product_month
+```
+
+```{r}
+g <- ggplot(sales_product_month, aes(y = QTY_ORDER, x = MONTH))
+
+g +  geom_bar(stat = "identity", aes(fill = PROD_ID)) 
+```
+
+September is the month with more sales and the product P6 sells much more than the others products. Some products seem to have no sales in some months like P8 and P9 in Feb and Jan.
+
+
